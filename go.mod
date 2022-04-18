@@ -3,7 +3,7 @@ module github.com/jamillosantos/go-services
 go 1.17
 
 require (
-	github.com/cenkalti/backoff/v4 v4.1.2
+	github.com/cenkalti/backoff/v4 v4.1.3
 	github.com/golang/mock v1.6.0
 	github.com/golangci/golangci-lint v1.44.0
 	github.com/jamillosantos/go-os-signals v0.2.0
