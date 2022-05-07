@@ -3,48 +3,31 @@ package services
 import (
 	"context"
 	"os"
-	"strings"
 	"sync"
 
 	signals "github.com/jamillosantos/go-os-signals"
 )
 
-type listenState int
-
-const (
-	ListenStateIdle listenState = iota
-	ListenStateStarting
-	ListenStateListening
-	ListenStateClosing
-	ListenStateClosed
-)
-
-type MultiErrors []error
-
-func (errs MultiErrors) Error() string {
-	var r strings.Builder
-	for idx, err := range errs {
-		if idx > 0 {
-			r.WriteString(", ")
-		}
-		r.WriteString(err.Error())
-	}
-	return r.String()
-}
-
 type Runner struct {
 	resourceServices []Resource
 
-	reporter        Reporter
+	observer        runnerObserver
 	listenerBuilder func() signals.Listener
 }
 
 type StarterOption = func(*Runner)
 
 // WithReporter is a StarterOption that will set the signal listener instance of a Runner.
-func WithReporter(reporter Reporter) StarterOption {
+func WithReporter(reporter Observer) StarterOption {
 	return func(manager *Runner) {
-		manager.reporter = reporter
+		manager.observer.Add(reporter)
+	}
+}
+
+// WithObserver is a StarterOption that will add an observer instance on the list.
+func WithObserver(observer Observer) StarterOption {
+	return func(manager *Runner) {
+		manager.observer.Add(observer)
 	}
 }
 
@@ -78,12 +61,10 @@ func NewRunner(opts ...StarterOption) *Runner {
 	return manager
 }
 
-func stopServers(ctx context.Context, reporter Reporter, servers []Server) {
+func stopServers(ctx context.Context, observer Observer, servers []Server) {
 	for _, server := range servers {
 		err := server.Close(ctx)
-		if reporter != nil {
-			reporter.AfterStop(ctx, server, err)
-		}
+		observer.AfterStop(ctx, server, err)
 	}
 }
 
@@ -124,8 +105,6 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 		cancelFunc()
 	}()
 
-	hasReporter := r.reporter != nil
-
 	servers := make([]Server, 0, len(services))
 	hasServer := false
 	var serversMutex sync.Mutex
@@ -139,7 +118,7 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 	defer func() {
 		serversMutex.Lock()
 		defer serversMutex.Unlock()
-		stopServers(ctx, r.reporter, servers)
+		stopServers(ctx, &r.observer, servers)
 	}()
 
 	errs := make(chan errPair, len(services))
@@ -165,13 +144,9 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 
 		// If the service is configurable
 		if srv, ok := service.(Configurable); ok {
-			if hasReporter {
-				r.reporter.BeforeLoad(ctx, srv)
-			}
+			r.observer.BeforeLoad(ctx, srv)
 			errResult = srv.Load(ctx)
-			if hasReporter {
-				r.reporter.AfterLoad(ctx, srv, errResult)
-			}
+			r.observer.AfterLoad(ctx, srv, errResult)
 			if errResult != nil {
 				return
 			}
@@ -193,16 +168,12 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 			// Not cancelled ...
 		}
 
-		if hasReporter {
-			r.reporter.BeforeStart(ctx, service)
-		}
+		r.observer.BeforeStart(ctx, service)
 
 		switch s := service.(type) {
 		case Resource:
 			errResult = s.Start(ctx)
-			if hasReporter {
-				r.reporter.AfterStart(ctx, service, errResult)
-			}
+			r.observer.AfterStart(ctx, service, errResult)
 			if errResult != nil {
 				return
 			}
@@ -273,29 +244,17 @@ func (r *Runner) Finish(ctx context.Context) (errResult error) {
 	ctx, cancelFunc := context.WithCancel(ctx)
 	defer cancelFunc()
 
-	hasReporter := r.reporter != nil
-
 	for i := len(r.resourceServices) - 1; i >= 0; i-- {
 		service := r.resourceServices[i]
-		if hasReporter {
-			r.reporter.BeforeStop(ctx, service)
-		}
+		r.observer.BeforeStop(ctx, service)
 		err := service.Stop(ctx)
-		if hasReporter {
-			r.reporter.AfterStop(ctx, service, err)
-		}
+		r.observer.AfterStop(ctx, service, err)
 		if err != nil {
 			return err
 		}
 		r.resourceServices = r.resourceServices[:len(r.resourceServices)-1]
 	}
 	return nil
-}
-
-// WithReporter sets the reporter for this Runner instance, returning it afterwards.
-func (r *Runner) WithReporter(reporter Reporter) *Runner {
-	r.reporter = reporter
-	return r
 }
 
 type errPair struct {
