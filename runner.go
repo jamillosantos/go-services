@@ -3,34 +3,10 @@ package services
 import (
 	"context"
 	"os"
-	"strings"
 	"sync"
 
 	signals "github.com/jamillosantos/go-os-signals"
 )
-
-type listenState int
-
-const (
-	ListenStateIdle listenState = iota
-	ListenStateStarting
-	ListenStateListening
-	ListenStateClosing
-	ListenStateClosed
-)
-
-type MultiErrors []error
-
-func (errs MultiErrors) Error() string {
-	var r strings.Builder
-	for idx, err := range errs {
-		if idx > 0 {
-			r.WriteString(", ")
-		}
-		r.WriteString(err.Error())
-	}
-	return r.String()
-}
 
 type Runner struct {
 	resourceServices []Resource
