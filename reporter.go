@@ -6,6 +6,7 @@ import (
 )
 
 // Reporter will be called Before and After some actions by a `Runner`.
+// Deprecated: Use the Observer interface instead.
 type Reporter interface {
 	BeforeStart(context.Context, Service)
 	AfterStart(context.Context, Service, error)
