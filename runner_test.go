@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"os"
+	"testing"
 	"time"
 
 	"github.com/golang/mock/gomock"
 	signals "github.com/jamillosantos/go-os-signals"
 	"github.com/jamillosantos/go-os-signals/signaltest"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/ginkgo" // nolint
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jamillosantos/go-services"
 )
@@ -19,12 +21,10 @@ func createController() *gomock.Controller {
 	return gomock.NewController(GinkgoT(1))
 }
 
-var _ = Describe("Runner", func() {
-	Describe("Run Resource instances", func() {
-		It("should start Resouce instances", func() {
-			ctrl := createController()
-			defer ctrl.Finish()
-
+func TestRunner_Run(t *testing.T) {
+	t.Run("resources", func(t *testing.T) {
+		t.Run("should start Resouce instances", func(t *testing.T) {
+			ctrl := gomock.NewController(t)
 			ctx := context.TODO()
 
 			// 1. Create 3 resourceServices
@@ -41,13 +41,12 @@ var _ = Describe("Runner", func() {
 				serviceC.EXPECT().Start(gomock.Any()),
 			)
 
-			Expect(runner.Run(ctx, serviceA, serviceB, serviceC)).To(Succeed())
+			err := runner.Run(ctx, serviceA, serviceB, serviceC)
+			require.NoError(t, err)
 		})
 
-		It("should not stop started Resource instances when one fails", func() {
-			ctrl := createController()
-			defer ctrl.Finish()
-
+		t.Run("should not stop started Resource instances when one fails", func(t *testing.T) {
+			ctrl := gomock.NewController(t)
 			ctx := context.TODO()
 
 			// 1. Create 3 resourceServices
@@ -66,13 +65,12 @@ var _ = Describe("Runner", func() {
 				serviceC.EXPECT().Start(gomock.Any()).Return(wantErr),
 			)
 
-			Expect(runner.Run(ctx, serviceA, serviceB, serviceC)).To(MatchError(wantErr))
+			err := runner.Run(ctx, serviceA, serviceB, serviceC)
+			assert.ErrorIs(t, err, wantErr)
 		})
 
-		It("should interrupt starting Resource instances", func() {
-			ctrl := createController()
-			defer ctrl.Finish()
-
+		t.Run("should interrupt starting Resource instances", func(t *testing.T) {
+			ctrl := gomock.NewController(t)
 			ctx, cancelFunc := context.WithCancel(context.TODO())
 			defer cancelFunc()
 
@@ -105,16 +103,14 @@ var _ = Describe("Runner", func() {
 
 			// 4. Checks if the start was cancelled.
 			err := runner.Run(ctx, serviceA, serviceB, serviceC)
-			Expect(err).To(Equal(context.Canceled))
+			assert.ErrorIs(t, err, context.Canceled)
 			now := time.Now()
 			_ = runner.Finish(context.Background())
-			Expect(time.Since(now)).To(BeNumerically("~", time.Second, time.Millisecond*50))
+			assert.InDelta(t, time.Second, time.Since(now), float64(time.Millisecond*50))
 		})
 
-		It("should interrupt starting Resource instances when Start fails", func() {
-			ctrl := createController()
-			defer ctrl.Finish()
-
+		t.Run("should interrupt starting Resource instances when Start fails", func(t *testing.T) {
+			ctrl := gomock.NewController(t)
 			ctx := context.TODO()
 
 			// 1. Create 3 resourceServices
@@ -137,16 +133,14 @@ var _ = Describe("Runner", func() {
 
 			// 4. Checks if the start was cancelled.
 			err := runner.Run(ctx, serviceA, serviceB, serviceC)
-			Expect(err).To(MatchError(errB))
+			assert.ErrorIs(t, err, errB)
 			_ = runner.Finish(context.Background())
 		})
 	})
 
-	Describe("Finish", func() {
-		It("should stop all resourceServices", func() {
-			ctrl := createController()
-			defer ctrl.Finish()
-
+	t.Run("Finish", func(t *testing.T) {
+		t.Run("should stop all resourceServices", func(t *testing.T) {
+			ctrl := gomock.NewController(t)
 			ctx := context.TODO()
 
 			// 1. Create 3 resourceServices
@@ -165,16 +159,16 @@ var _ = Describe("Runner", func() {
 
 			// 2. Triggers the runner
 			runner := services.NewRunner()
-			Expect(runner.Run(ctx, serviceA, serviceB, serviceC)).To(Succeed())
+			err := runner.Run(ctx, serviceA, serviceB, serviceC)
+			require.NoError(t, err)
 
 			// 3. Close the resourceServices.
-			Expect(runner.Finish(ctx)).To(Succeed())
+			err = runner.Finish(ctx)
+			require.NoError(t, err)
 		})
 
-		It("should fail when a resource service can't stop", func() {
-			ctrl := createController()
-			defer ctrl.Finish()
-
+		t.Run("should fail when a resource service can't stop", func(t *testing.T) {
+			ctrl := gomock.NewController(t)
 			ctx := context.TODO()
 
 			// 1. Create 3 resourceServices
@@ -194,17 +188,18 @@ var _ = Describe("Runner", func() {
 
 			// 2. Triggers the Runner
 			runner := services.NewRunner()
-			Expect(runner.Run(ctx, serviceA, serviceB, serviceC)).To(Succeed())
+			err := runner.Run(ctx, serviceA, serviceB, serviceC)
+			require.NoError(t, err)
 
 			// 3. Close the resourceServices and ensure an error was returned.
-			Expect(runner.Finish(ctx)).To(MatchError(errA))
+			err = runner.Finish(ctx)
+			require.ErrorIs(t, err, errA)
 		})
 	})
 
-	Describe("Run Server instances", func() {
-		It("should start a Server instance", func() {
-			ctrl := createController()
-			defer ctrl.Finish()
+	t.Run("Run Server instances", func(t *testing.T) {
+		t.Run("should start a Server instance", func(t *testing.T) {
+			ctrl := gomock.NewController(t)
 
 			ctx, cancelFunc := context.WithCancel(context.TODO())
 			defer cancelFunc()
@@ -232,13 +227,14 @@ var _ = Describe("Runner", func() {
 				cancelFunc()
 			}()
 
-			Expect(runner.Run(ctx, serviceA, serviceB, serviceC)).To(MatchError(context.Canceled))
+			err := runner.Run(ctx, serviceA, serviceB, serviceC)
+			require.ErrorIs(t, err, context.Canceled)
+
 		})
 
-		When("a Serve instance fail starting", func() {
-			It("should interrupt starting a Serve instance", func() {
-				ctrl := createController()
-				defer ctrl.Finish()
+		t.Run("WHEN a Serve instance fail starting", func(t *testing.T) {
+			t.Run("should interrupt starting a Serve instance", func(t *testing.T) {
+				ctrl := gomock.NewController(t)
 
 				ctx := context.TODO()
 
@@ -266,16 +262,16 @@ var _ = Describe("Runner", func() {
 				// 2. Create and Run the Runner
 				runner := services.NewRunner()
 
-				Expect(runner.Run(ctx, serviceA, serviceB, serviceC)).To(Equal(services.MultiErrors{
+				err := runner.Run(ctx, serviceA, serviceB, serviceC)
+				require.Equal(t, err, services.MultiErrors{
 					nil, nil, wantErr,
-				}))
+				})
 			})
 		})
 
-		When("receive a signal", func() {
-			It("should interrupt starting services", func() {
-				ctrl := createController()
-				defer ctrl.Finish()
+		t.Run("WHEN receive a signal", func(t *testing.T) {
+			t.Run("should interrupt starting services", func(t *testing.T) {
+				ctrl := gomock.NewController(t)
 
 				ctx := context.TODO()
 
@@ -305,8 +301,8 @@ var _ = Describe("Runner", func() {
 				}))
 
 				go func() {
-					defer GinkgoRecover()
-					Expect(runner.Run(ctx, serverA, serverB, serverC)).To(Succeed())
+					err := runner.Run(ctx, serverA, serverB, serverC)
+					require.NoError(t, err)
 				}()
 
 				time.Sleep(time.Millisecond * 100)
@@ -315,4 +311,4 @@ var _ = Describe("Runner", func() {
 			})
 		})
 	})
-})
+}

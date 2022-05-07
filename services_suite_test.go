@@ -4,8 +4,8 @@ package services_test
 import (
 	"testing"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/ginkgo" // nolint
+	. "github.com/onsi/gomega" // nolint
 )
 
 func TestServices(t *testing.T) {
