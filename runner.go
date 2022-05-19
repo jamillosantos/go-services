@@ -4,12 +4,16 @@ import (
 	"context"
 	"os"
 	"sync"
+	"time"
 
 	signals "github.com/jamillosantos/go-os-signals"
 )
 
 type Runner struct {
-	resourceServices []Resource
+	servicesM sync.Mutex
+	services  []Service
+
+	wgServers sync.WaitGroup
 
 	observer        runnerObserver
 	listenerBuilder func() signals.Listener
@@ -52,20 +56,13 @@ func WithSignals(ss ...os.Signal) StarterOption {
 // If a listener is not defined, it will create one based on DefaultSignals.
 func NewRunner(opts ...StarterOption) *Runner {
 	manager := &Runner{
-		resourceServices: make([]Resource, 0),
+		services: make([]Service, 0),
 	}
 	for _, opt := range opts {
 		opt(manager)
 	}
 
 	return manager
-}
-
-func stopServers(ctx context.Context, observer Observer, servers []Server) {
-	for _, server := range servers {
-		err := server.Close(ctx)
-		observer.AfterStop(ctx, server, err)
-	}
 }
 
 // Run goes through all given Service instances trying to start them. This function only supports Resource or Server
@@ -88,39 +85,6 @@ func stopServers(ctx context.Context, observer Observer, servers []Server) {
 // Whenever this function exists, all given Server instances will be closed by using Server.Close. Then, it will wait
 // until the Server.Listen finished.
 func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error) {
-	var listener signals.Listener
-	if r.listenerBuilder == nil {
-		listener = signals.NewListener(DefaultSignals...)
-	} else {
-		listener = r.listenerBuilder()
-	}
-	defer listener.Stop()
-
-	ctxSignal, cancelFunc := context.WithCancel(context.Background())
-	defer cancelFunc()
-
-	go func() {
-		// Intercepts a signal cancelling the procedure of starting services.
-		<-listener.Receive()
-		cancelFunc()
-	}()
-
-	servers := make([]Server, 0, len(services))
-	hasServer := false
-	var serversMutex sync.Mutex
-
-	var wgServers sync.WaitGroup
-
-	// Make sure that all servers will be finished
-	defer wgServers.Wait()
-
-	// Finish all servers
-	defer func() {
-		serversMutex.Lock()
-		defer serversMutex.Unlock()
-		stopServers(ctx, &r.observer, servers)
-	}()
-
 	errs := make(chan errPair, len(services))
 
 	// Go through all resourceServices starting one by one.
@@ -129,15 +93,7 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 		// Check if the starting process was cancelled.
 		select {
 		case <-ctx.Done():
-			if hasServer {
-				break
-			}
 			return ctx.Err()
-		case <-ctxSignal.Done():
-			if hasServer {
-				break
-			}
-			return ErrStartCancelledBySignal
 		default:
 			// Not cancelled ...
 		}
@@ -155,15 +111,7 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 		// Loading configuration can take a long time. Then, check if the starting process was cancelled again.
 		select {
 		case <-ctx.Done():
-			if hasServer {
-				break
-			}
 			return ctx.Err()
-		case <-ctxSignal.Done():
-			if hasServer {
-				break
-			}
-			return ErrStartCancelledBySignal
 		default:
 			// Not cancelled ...
 		}
@@ -177,20 +125,20 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 			if errResult != nil {
 				return
 			}
-			r.resourceServices = append(r.resourceServices, s)
+			r.servicesM.Lock()
+			r.services = append(r.services, s)
+			r.servicesM.Unlock()
 		case Server:
-			hasServer = true
-			wgServers.Add(1)
+			r.wgServers.Add(1)
 
-			serversMutex.Lock()
-			servers = append(servers, s)
-			serversMutex.Unlock()
+			r.addService(s)
 
 			go func(s Server, idx int) {
-				defer wgServers.Done()
+				defer r.wgServers.Done()
 
 				err := s.Listen(ctx)
 				if err != nil && err != context.Canceled {
+					r.removeService(s)
 					errs <- errPair{
 						idx,
 						err,
@@ -204,19 +152,9 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 	// Loading configuration can take a long time. Then, check if the starting process was cancelled again.
 	select {
 	case <-ctx.Done():
-		if !hasServer {
-			return ctx.Err()
-		}
-	case <-ctxSignal.Done():
-		if !hasServer {
-			return ErrStartCancelledBySignal
-		}
+		return ctx.Err()
 	default:
 		// Not cancelled ...
-	}
-
-	if !hasServer {
-		return nil
 	}
 
 	errMulti := make(MultiErrors, serverCount)
@@ -231,10 +169,25 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 			errMulti[ep.idx] = ep.err
 		}
 		return errMulti
-	case <-ctxSignal.Done(): // Wait a signal to come in.
-		return nil
-	case <-ctx.Done(): // the deferred methods will handle this...
+	case <-ctx.Done():
 		return ctx.Err()
+	case <-time.After(time.Second):
+		return nil
+	}
+}
+
+// Wait will block until all servers are stopped.
+func (r *Runner) Wait(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		r.wgServers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-ctx.Done():
+		return
 	}
 }
 
@@ -244,17 +197,43 @@ func (r *Runner) Finish(ctx context.Context) (errResult error) {
 	ctx, cancelFunc := context.WithCancel(ctx)
 	defer cancelFunc()
 
-	for i := len(r.resourceServices) - 1; i >= 0; i-- {
-		service := r.resourceServices[i]
+	var err error
+	r.servicesM.Lock()
+	for i := len(r.services) - 1; i >= 0; i-- {
+		service := r.services[i]
 		r.observer.BeforeStop(ctx, service)
-		err := service.Stop(ctx)
+		switch s := service.(type) {
+		case Resource:
+			err = s.Stop(ctx)
+		case Server:
+			err = s.Close(ctx)
+		}
 		r.observer.AfterStop(ctx, service, err)
 		if err != nil {
 			return err
 		}
-		r.resourceServices = r.resourceServices[:len(r.resourceServices)-1]
+		r.services = r.services[:len(r.services)-1]
 	}
+	r.servicesM.Unlock()
+
 	return nil
+}
+
+func (r *Runner) addService(s Service) {
+	r.servicesM.Lock()
+	r.services = append(r.services, s)
+	r.servicesM.Unlock()
+}
+
+func (r *Runner) removeService(s Service) {
+	r.servicesM.Lock()
+	for i, server := range r.services {
+		if server == s {
+			r.services = append(r.services[:i], r.services[i+1:]...)
+			break
+		}
+	}
+	r.servicesM.Unlock()
 }
 
 type errPair struct {

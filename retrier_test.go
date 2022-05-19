@@ -62,7 +62,7 @@ var _ = Describe("Retrier", func() {
 			runner := services.NewRunner()
 			startedAt := time.Now()
 			Expect(runner.Run(ctx, serviceARetrier)).To(Succeed())
-			Expect(time.Since(startedAt)).To(BeNumerically("~", time.Millisecond*150, time.Millisecond*20))
+			Expect(time.Since(startedAt)).To(BeNumerically("~", time.Millisecond*1150, time.Millisecond*20))
 		})
 
 		It("should load a Configurable service", func() {

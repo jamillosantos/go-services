@@ -138,65 +138,6 @@ func TestRunner_Run(t *testing.T) {
 		})
 	})
 
-	t.Run("Finish", func(t *testing.T) {
-		t.Run("should stop all resourceServices", func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			ctx := context.TODO()
-
-			// 1. Create 3 resourceServices
-			serviceA := NewMockResource(ctrl)
-			serviceB := NewMockResource(ctrl)
-			serviceC := NewMockResource(ctrl)
-
-			gomock.InOrder(
-				serviceA.EXPECT().Start(gomock.Any()),
-				serviceB.EXPECT().Start(gomock.Any()),
-				serviceC.EXPECT().Start(gomock.Any()),
-				serviceC.EXPECT().Stop(gomock.Any()),
-				serviceB.EXPECT().Stop(gomock.Any()),
-				serviceA.EXPECT().Stop(gomock.Any()),
-			)
-
-			// 2. Triggers the runner
-			runner := services.NewRunner()
-			err := runner.Run(ctx, serviceA, serviceB, serviceC)
-			require.NoError(t, err)
-
-			// 3. Close the resourceServices.
-			err = runner.Finish(ctx)
-			require.NoError(t, err)
-		})
-
-		t.Run("should fail when a resource service can't stop", func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			ctx := context.TODO()
-
-			// 1. Create 3 resourceServices
-			serviceA := NewMockResource(ctrl)
-			serviceB := NewMockResource(ctrl)
-			serviceC := NewMockResource(ctrl)
-
-			errA := errors.New("any error")
-			gomock.InOrder(
-				serviceA.EXPECT().Start(gomock.Any()),
-				serviceB.EXPECT().Start(gomock.Any()),
-				serviceC.EXPECT().Start(gomock.Any()),
-				serviceC.EXPECT().Stop(gomock.Any()),
-				serviceB.EXPECT().Stop(gomock.Any()),
-				serviceA.EXPECT().Stop(gomock.Any()).Return(errA),
-			)
-
-			// 2. Triggers the Runner
-			runner := services.NewRunner()
-			err := runner.Run(ctx, serviceA, serviceB, serviceC)
-			require.NoError(t, err)
-
-			// 3. Close the resourceServices and ensure an error was returned.
-			err = runner.Finish(ctx)
-			require.ErrorIs(t, err, errA)
-		})
-	})
-
 	t.Run("Run Server instances", func(t *testing.T) {
 		t.Run("should start a Server instance", func(t *testing.T) {
 			ctrl := gomock.NewController(t)
@@ -213,23 +154,11 @@ func TestRunner_Run(t *testing.T) {
 			serviceB.EXPECT().Listen(gomock.Any()).Return(nil)
 			serviceC.EXPECT().Listen(gomock.Any()).Return(nil)
 
-			serviceA.EXPECT().Close(gomock.Any())
-			serviceB.EXPECT().Close(gomock.Any())
-			serviceC.EXPECT().Close(gomock.Any())
-
 			// 2. Create and Run the Runner
 			runner := services.NewRunner()
 
-			go func() {
-				defer GinkgoRecover()
-				time.Sleep(time.Second)
-
-				cancelFunc()
-			}()
-
 			err := runner.Run(ctx, serviceA, serviceB, serviceC)
-			require.ErrorIs(t, err, context.Canceled)
-
+			require.NoError(t, err)
 		})
 
 		t.Run("WHEN a Serve instance fail starting", func(t *testing.T) {
@@ -269,11 +198,12 @@ func TestRunner_Run(t *testing.T) {
 			})
 		})
 
-		t.Run("WHEN receive a signal", func(t *testing.T) {
+		t.Run("WHEN context canceled", func(t *testing.T) {
 			t.Run("should interrupt starting services", func(t *testing.T) {
 				ctrl := gomock.NewController(t)
 
-				ctx := context.TODO()
+				ctx, cancelFunc := context.WithCancel(context.TODO())
+				defer cancelFunc()
 
 				// 1. Create 3 resourceServices
 				serverA := NewMockServer(ctrl)
@@ -302,13 +232,47 @@ func TestRunner_Run(t *testing.T) {
 
 				go func() {
 					err := runner.Run(ctx, serverA, serverB, serverC)
-					require.NoError(t, err)
+					require.ErrorIs(t, err, context.Canceled)
 				}()
 
 				time.Sleep(time.Millisecond * 100)
-				listener.Send(os.Interrupt)
+				cancelFunc()
 				time.Sleep(time.Second)
 			})
 		})
+	})
+}
+
+func TestRunner_Finish(t *testing.T) {
+	t.Run("should stop all services", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		ctx := context.TODO()
+
+		// 1. Create 3 resourceServices
+		serviceA := NewMockResource(ctrl)
+		serviceB := NewMockServer(ctrl)
+		serviceC := NewMockResource(ctrl)
+		serviceD := NewMockServer(ctrl)
+
+		serviceA.EXPECT().Start(gomock.Any())
+		serviceB.EXPECT().Listen(gomock.Any())
+		serviceC.EXPECT().Start(gomock.Any())
+		serviceD.EXPECT().Listen(gomock.Any())
+
+		// 2. Triggers the runner
+		runner := services.NewRunner()
+		err := runner.Run(ctx, serviceA, serviceB, serviceC, serviceD)
+		require.NoError(t, err)
+
+		serviceD.EXPECT().Close(gomock.Any()).Do(func(_ context.Context) { time.Sleep(time.Millisecond * 100) })
+		serviceC.EXPECT().Stop(gomock.Any()).Do(func(_ context.Context) { time.Sleep(time.Millisecond * 300) })
+		serviceB.EXPECT().Close(gomock.Any()).Do(func(_ context.Context) { time.Sleep(time.Millisecond * 500) })
+		serviceA.EXPECT().Stop(gomock.Any()).Do(func(_ context.Context) { time.Sleep(time.Millisecond * 700) })
+
+		// 3. Close the resourceServices.
+		n := time.Now()
+		err = runner.Finish(ctx)
+		require.NoError(t, err)
+		assert.InDelta(t, time.Millisecond*1600, time.Since(n), float64(time.Millisecond*50))
 	})
 }
