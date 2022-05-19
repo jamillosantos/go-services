@@ -13,7 +13,7 @@ type Runner struct {
 	servicesM sync.Mutex
 	services  []Service
 
-	wgServers sync.WaitGroup
+	wgServices sync.WaitGroup
 
 	observer        runnerObserver
 	listenerBuilder func() signals.Listener
@@ -126,15 +126,16 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 				return
 			}
 			r.servicesM.Lock()
+			r.wgServices.Add(1)
 			r.services = append(r.services, s)
 			r.servicesM.Unlock()
 		case Server:
-			r.wgServers.Add(1)
+			r.wgServices.Add(1)
 
 			r.addService(s)
 
 			go func(s Server, idx int) {
-				defer r.wgServers.Done()
+				defer r.wgServices.Done()
 
 				err := s.Listen(ctx)
 				if err != nil && err != context.Canceled {
@@ -180,7 +181,7 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 func (r *Runner) Wait(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
-		r.wgServers.Wait()
+		r.wgServices.Wait()
 		close(done)
 	}()
 	select {
@@ -205,6 +206,7 @@ func (r *Runner) Finish(ctx context.Context) (errResult error) {
 		switch s := service.(type) {
 		case Resource:
 			err = s.Stop(ctx)
+			r.wgServices.Done()
 		case Server:
 			err = s.Close(ctx)
 		}

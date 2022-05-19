@@ -276,3 +276,63 @@ func TestRunner_Finish(t *testing.T) {
 		assert.InDelta(t, time.Millisecond*1600, time.Since(n), float64(time.Millisecond*50))
 	})
 }
+
+func TestRunner_Wait(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	ctx := context.TODO()
+
+	// 1. Create 3 resourceServices
+	serviceA := NewMockResource(ctrl)
+	serviceB := NewMockServer(ctrl)
+	serviceC := NewMockResource(ctrl)
+	serviceD := NewMockServer(ctrl)
+
+	ctxB, cancelB := context.WithCancel(ctx)
+	ctxD, cancelD := context.WithCancel(ctx)
+
+	serviceA.EXPECT().Start(gomock.Any())
+	serviceB.EXPECT().Listen(gomock.Any()).
+		Do(func(_ context.Context) {
+			<-ctxB.Done()
+		})
+	serviceC.EXPECT().Start(gomock.Any())
+	serviceD.EXPECT().Listen(gomock.Any()).
+		Do(func(_ context.Context) {
+			<-ctxD.Done()
+		})
+
+	// 2. Triggers the runner
+	runner := services.NewRunner()
+	err := runner.Run(ctx, serviceA, serviceB, serviceC, serviceD)
+	require.NoError(t, err)
+
+	go func() {
+		serviceD.EXPECT().Close(gomock.Any()).
+			Do(func(_ context.Context) {
+				time.Sleep(time.Millisecond * 100)
+				cancelD()
+			})
+		serviceC.EXPECT().Stop(gomock.Any()).
+			Do(func(_ context.Context) {
+				time.Sleep(time.Millisecond * 300)
+			})
+		serviceB.EXPECT().Close(gomock.Any()).
+			Do(func(_ context.Context) {
+				time.Sleep(time.Millisecond * 500)
+				cancelB()
+			})
+		serviceA.EXPECT().Stop(gomock.Any()).
+			Do(func(_ context.Context) {
+				time.Sleep(time.Millisecond * 700)
+			})
+
+		err = runner.Finish(ctx)
+		require.NoError(t, err)
+	}()
+
+	ctx, cancelFnc := context.WithTimeout(ctx, time.Second*5)
+	defer cancelFnc()
+	n := time.Now()
+	runner.Wait(ctx)
+	assert.InDelta(t, time.Millisecond*1600, time.Since(n), float64(time.Millisecond*100))
+}
