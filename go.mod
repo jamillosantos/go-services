@@ -4,7 +4,7 @@ go 1.17
 
 require (
 	github.com/cenkalti/backoff/v4 v4.1.3
-	github.com/fzipp/gocyclo v0.5.1
+	github.com/fzipp/gocyclo v0.6.0
 	github.com/golang/mock v1.6.0
 	github.com/golangci/golangci-lint v1.46.1
 	github.com/jamillosantos/go-os-signals v0.2.0
