@@ -4,19 +4,28 @@ import (
 	"context"
 	"os"
 	"sync"
-	"time"
 
 	signals "github.com/jamillosantos/go-os-signals"
+)
+
+type finishState string
+
+const (
+	FSFinishing finishState = "finishing"
+	FSFinished  finishState = "finished"
 )
 
 type Runner struct {
 	servicesM sync.Mutex
 	services  []Service
 
-	wgServices sync.WaitGroup
-
 	observer        runnerObserver
 	listenerBuilder func() signals.Listener
+	wgRun           sync.WaitGroup
+	wgFinish        sync.WaitGroup
+
+	finishM     sync.Mutex
+	finishState finishState
 }
 
 type StarterOption = func(*Runner)
@@ -85,10 +94,10 @@ func NewRunner(opts ...StarterOption) *Runner {
 // Whenever this function exists, all given Server instances will be closed by using Server.Close. Then, it will wait
 // until the Server.Listen finished.
 func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error) {
-	errs := make(chan errPair, len(services))
+	r.wgRun.Add(1)
+	defer r.wgRun.Done()
 
 	// Go through all resourceServices starting one by one.
-	serverCount := 0
 	for _, service := range services {
 		// Check if the starting process was cancelled.
 		select {
@@ -117,37 +126,19 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 		}
 
 		r.observer.BeforeStart(ctx, service)
-
 		switch s := service.(type) {
 		case Resource:
 			errResult = s.Start(ctx)
-			r.observer.AfterStart(ctx, service, errResult)
-			if errResult != nil {
-				return
-			}
-			r.servicesM.Lock()
-			r.wgServices.Add(1)
-			r.services = append(r.services, s)
-			r.servicesM.Unlock()
 		case Server:
-			r.wgServices.Add(1)
-
-			r.addService(s)
-
-			go func(s Server, idx int) {
-				defer r.wgServices.Done()
-
-				err := s.Listen(ctx)
-				if err != nil && err != context.Canceled {
-					r.removeService(s)
-					errs <- errPair{
-						idx,
-						err,
-					}
-				}
-			}(s, serverCount)
-			serverCount++
+			errResult = s.Listen(ctx)
+		default:
+			return ErrInvalidServiceType
 		}
+		r.observer.AfterStart(ctx, service, errResult)
+		if errResult != nil {
+			return
+		}
+		r.addService(service)
 	}
 
 	// Loading configuration can take a long time. Then, check if the starting process was cancelled again.
@@ -158,45 +149,27 @@ func (r *Runner) Run(ctx context.Context, services ...Service) (errResult error)
 		// Not cancelled ...
 	}
 
-	errMulti := make(MultiErrors, serverCount)
-
-	select {
-	case ep := <-errs:
-		if ep.err != nil {
-			errMulti[ep.idx] = ep.err
-		}
-		close(errs)
-		for ep := range errs {
-			errMulti[ep.idx] = ep.err
-		}
-		return errMulti
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(time.Second):
-		return nil
-	}
-}
-
-// Wait will block until all servers are stopped.
-func (r *Runner) Wait(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		r.wgServices.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return
-	case <-ctx.Done():
-		return
-	}
+	return nil
 }
 
 // Finish will go through all started resourceServices, in the opposite order they were started, stopping one by one. If any,
 // failure is detected, the function will stop leaving some started resourceServices.
 func (r *Runner) Finish(ctx context.Context) (errResult error) {
+	r.wgRun.Wait()    // Wait any Run caller to finish.
+	r.wgFinish.Wait() // Wait if another Finish is running.
+
+	r.wgFinish.Add(1)
+	defer r.wgFinish.Done()
+
 	ctx, cancelFunc := context.WithCancel(ctx)
-	defer cancelFunc()
+	defer func() {
+		cancelFunc()
+
+		r.finishM.Lock()
+		r.finishState = FSFinished
+		r.finishM.Unlock()
+	}()
+	r.finishState = FSFinishing
 
 	var err error
 	r.servicesM.Lock()
@@ -206,9 +179,10 @@ func (r *Runner) Finish(ctx context.Context) (errResult error) {
 		switch s := service.(type) {
 		case Resource:
 			err = s.Stop(ctx)
-			r.wgServices.Done()
 		case Server:
 			err = s.Close(ctx)
+		default:
+			continue
 		}
 		r.observer.AfterStop(ctx, service, err)
 		if err != nil {
@@ -225,20 +199,4 @@ func (r *Runner) addService(s Service) {
 	r.servicesM.Lock()
 	r.services = append(r.services, s)
 	r.servicesM.Unlock()
-}
-
-func (r *Runner) removeService(s Service) {
-	r.servicesM.Lock()
-	for i, server := range r.services {
-		if server == s {
-			r.services = append(r.services[:i], r.services[i+1:]...)
-			break
-		}
-	}
-	r.servicesM.Unlock()
-}
-
-type errPair struct {
-	idx int
-	err error
 }

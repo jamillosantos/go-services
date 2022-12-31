@@ -41,12 +41,13 @@ type Resource interface {
 type Server interface {
 	Service
 
-	// Listen will start the server and will block until the service is closed.
+	// Listen will start the server and should never block.
 	//
 	// If the services is already listining, this should return an error ErrAlreadyListening.
 	Listen(ctx context.Context) error
 
-	// Close will stop this service.
+	// Close will stop this service. It should block until all resources are released and the server is properly
+	// shutdown.
 	//
 	// If the services has not started, or is already stopped, this should do nothing and just return nil.
 	Close(ctx context.Context) error

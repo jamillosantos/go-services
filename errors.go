@@ -1,7 +1,12 @@
 package services
 
 import (
+	"errors"
 	"strings"
+)
+
+var (
+	ErrInvalidServiceType = errors.New("invalid service type")
 )
 
 type MultiErrors []error
